@@ -30,5 +30,13 @@ docker images
 # remove unused images
 docker rmi <tool_tag>
 ```
+
+### singularity/apptainer
+on HPC-like systems, Singularity is preferred. 
+
+```bash
+singularity pull docker://username/tool:version
+```
+
 ### reference
-[Docker Hub.](https://hub.docker.com/)
+[Docker Hub](https://hub.docker.com/)
