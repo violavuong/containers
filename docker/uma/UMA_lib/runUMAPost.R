@@ -2,8 +2,8 @@
 
 # file: runUMAPost.R
 # aim: Running the entire post-processing analyses of UMA panel experiments
-# version: 0.1
-# last update: 25-03-25
+# version: 0.2
+# last update: 24-09-2025
 
 library(optparse)
 
@@ -15,6 +15,8 @@ options <- list(
   make_option(c("--libDir", "-l"), type = "character", default = "/UMA_lib/", help = "Path to UMA library directory"),
   #make_option(c("--runID"), type = "character", help = "Run ID"),
   make_option(c("--refGen", "-r"), type = "character", default = "hg19", help = "Reference genome. Default: [%default]"),
+  make_option(c("--PON"), type = "character", default = "targets_Normalization_Factors.txt", help = "Panel of normal. Default: [%default]"), 
+  make_option(c("--samplesPurity"), type = "character", default = "PERCENTUALI POST ARRICCHIMENTO.xlsx", help = "Samples purity. Default: [%default]"),
   make_option(c("--broadLow"), type = "numeric", default = 2e6, help = "Broad CNAs reads lower limit. Default: [%default]"),
   make_option(c("--broadHigh"), type = "numeric", default = 3e6, help = "Broad CNAs reads upper limit. Default: [%default]"),
   make_option(c("--focalLow"), type = "numeric", default = 1e6, help = "Focal CNAs reads lower limit. Default: [%default]"),
@@ -23,8 +25,8 @@ options <- list(
   make_option(c("--MAD"), type = "numeric", default = 0.15, help = "MAD value cut-off. Default: [%default]"),
   make_option(c("--totReads"), type = "numeric", default = 4e6, help = "Total reads cut-off. Default: [%default]"),
   make_option(c("--normChr"), type = "character", default = "c(\"1p\",\"2p\",\"2q\",\"4p\",\"4q\",\"6p\",\"8p\",\"10p\",\"12p\",\"12q\",\"16p\",\"17p\",\"17q\",\"18p\",\"18q\",\"20p\",\"20q\",\"22q\")", help = "Normal chromosomes. Default: [%default]"),
-  make_option(c("--clnTh"), type = "numeric", default = 0.2, help = "Broad CNA calling threshold. Default: [%default]"),
-  make_option(c("--purity"), type = "numeric", default = 0.3, help = "Sample purity CN value correction threshold. Default: [%default]"),
+  make_option(c("--th"), type = "numeric", default = 0.2, help = "CNA calling cut-off Default: [%default]"),
+  make_option(c("--purityTh"), type = "numeric", default = 0.5, help = "Sample purity CN value correction threshold. Default: [%default]"),
   make_option(c("--IgH"), type = "numeric", default = 1e6, help = "IgH locus length. Default: [%default]"),
   make_option(c("--target"), type = "numeric", default = 5e6, help = "Maximum distance from the target gene supported. Default: [%default]"),
   make_option(c("--partners"), type = "character", default = "c(4,6,11,16,20)", help = "Partner chromosomes of chromosome 14. Default: [%default]"),
@@ -41,6 +43,8 @@ wd <- opt$wd
 libDir <- opt$libDir
 #runID <- opt$runID
 refGen <- opt$refGen
+PON <- opt$PON
+samplesPurity <- opt$samplesPurity
 broadLow <- opt$broadLow
 broadHigh <- opt$broadHigh
 focalLow <- opt$focalLow
@@ -49,8 +53,8 @@ percOff <- opt$percOff
 MAD <- opt$MAD
 totReads <- opt$totReads
 normChr <- as.character(eval(parse(text = opt$normChr)))
-clnTh <- opt$clnTh
-purityTh <- opt$purity
+th <- opt$th
+purityTh <- opt$purityTh
 IgHLocus <- opt$IgH
 targetGene <- opt$target
 partners <- eval(parse(text = opt$partners))
@@ -75,12 +79,14 @@ suppressWarnings(suppressMessages(library(readr)))
 suppressWarnings(suppressMessages(library(readxl)))
 suppressWarnings(suppressMessages(library(reshape2)))
 suppressWarnings(suppressMessages(library(stringr)))
+suppressWarnings(suppressMessages(library(tibble)))
 suppressWarnings(suppressMessages(library(tidyr)))
 suppressWarnings(suppressMessages(library(vcfR)))
 
 
 ## loading custom function
 source(paste0(libDir, "fun/alterations.R"))
+source(paste0(libDir, "fun/CCF.R"))
 source(paste0(libDir, "fun/DRrefit2.R"))
 source(paste0(libDir, "fun/plot.R"))
 source(paste0(libDir, "fun/Popeye2.R"))
@@ -92,7 +98,7 @@ source(paste0(libDir, "fun/VarianThinker.R"))
 dir.create(paste0(outDir), recursive = TRUE)
 
 ## defining global variables
-regex <- list(hs = "HsMetrics_\\d+\\.txt", cnv = ".call.cns", exons = "targetCoverage", 
+regex <- list(hs = "HsMetrics.*S[0-9]+.txt", cnv = ".call.cns", exons = "targetCoverage", 
               delly = "delly.*vcf", manta = "manta.*vcf",
               mut = "mutect2.*multianno.vcf", str = "strelka.*multianno.vcf", var2 = "varscan.*vcf", fb = "^freebayes.*vcf")
 
@@ -105,11 +111,19 @@ dir.create(paste0(outDir, "metrics/"), recursive = TRUE)
 
 
 ## cwR on- and off-target metrics
-cwR_off_on <- fread(file = paste0(wd, "CopywriteR/CNAprofiles/CopywriteR.log"), skip = "off.target") %>% 
-  select(-starts_with("unmappable")) %>%
-  filter(V1 != "remDup_recal_DONOR.bam") %>%
+cwR_off <- fread(file = paste0(wd, "CopywriteR/CNAprofiles/CopywriteR.log"), skip = "off.target") %>% 
+  select(V1, off.target) %>%
+  filter(!grepl("DONOR", V1)) %>%
   rename_with(~"ID", 1) %>%
   mutate(ID = mgsub(ID, c("remDup_recal_", "\\.bam"), c("", "")))
+
+cwR_on <- fread(file = paste0(wd, "CopywriteR/CNAprofiles/CopywriteR.log"), skip = "on.target") %>% 
+  select(V1, on.target) %>%
+  filter(!grepl("DONOR", V1)) %>%
+  rename_with(~"ID", 1) %>%
+  mutate(ID = mgsub(ID, c("remDup_recal_", "\\.bam"), c("", "")))
+
+cwR_off_on <- left_join(cwR_off, cwR_on, by = "ID")
 colnames(cwR_off_on) <- gsub("\\.", "_", colnames(cwR_off_on))
 
 IDs <- cwR_off_on$ID #sample IDs
@@ -117,7 +131,7 @@ IDs <- cwR_off_on$ID #sample IDs
 ## MAD
 cwR_MAD <- fread(file = paste0(wd, "CopywriteR/CNAprofiles/CopywriteR.log"), skip = "MAD", select = c(8, 10)) %>%
   rename_with(~c("ID", "MAD"), c(1, 2)) %>% 
-  filter(!(grepl("none|DONOR.bam.vs", ID))) %>%
+  filter(!(grepl("none|DONOR.bam.vs|DONOR_NovaSeq.bam.vs", ID))) %>%
   mutate(ID = mgsub(ID, c("remDup_recal_", "\\.vs.*", "log2.", "\\.bam"), c("", "", "", "")))
 
 ## merging cwR metrics 
@@ -134,13 +148,13 @@ colnames(coverage)[2:3] <- tolower(colnames(coverage)[2:3])
 
 ## merging cwR and HSmetrics
 metrics_df <- left_join(cwR_metrics, coverage, by = "ID") %>%
-  mutate(DNA = ID %>% str_remove("_.*"), .after = ID)
+  mutate(DNA = ID %>% str_remove("_S.*$"), .after = ID)
 
 ## purity
-purity_df <- suppressMessages(read_xlsx(paste0(wd, "PERCENTUALI POST ARRICCHIMENTO.xlsx")))[, 2:3] %>%
+purity_df <- suppressMessages(read_xlsx(paste0(wd, samplesPurity)))[, 2:3] %>%
   rename_with(~c("DNA", "purity"), c(n_DNA, `%POST`)) %>%
   mutate(DNA = as.character(DNA), 
-         purity = purity / 100)
+         purity = as.numeric(purity) / 100)
 
 quality_df <- merge(metrics_df, purity_df, by = "DNA") %>%
   relocate(DNA, purity, .after = ID)
@@ -190,7 +204,7 @@ message("Running tool: copywriteR.\n")
 load(paste0(wd, "CopywriteR/CNAprofiles/segment.Rdata"))
 cwR_raw_segs <- segment.CNA.object$output %>%
   filter(!(grepl("none|DONOR.bam.vs.log2.remDup_recal_DONOR", ID))) %>%
-  mutate(ID = str_remove_all(ID, paste(c("log2.","\\.bam.*", "remDup_recal_"), collapse = "|")), 
+  mutate(ID = str_remove_all(ID, paste(c("log2.", "\\.bam.*", "remDup_recal_"), collapse = "|")), 
          width = loc.end - loc.start, .after = loc.end) %>%
   mutate(CN = 2^(seg.mean + 1), .after = seg.mean, 
          chrom = recode(as.character(chrom), "23"="X", "24"="Y")) %>%
@@ -237,8 +251,7 @@ cwR_GR_dfs <- sapply(IDs, function(x) createGR(cwR_corrected_list$purity, x, "co
 CNV_GR_dfs <- sapply(IDs, function(x) createGR(CNV_corrected_list$purity, x, "CNVkit"))
 merged_GR_dfs <- mapply(c, cwR_GR_dfs, CNV_GR_dfs)
 
-## tools concordance - clinical threshold
-broad_conc <- rbindlist(mapply(broadConcordance, merged_GR_dfs, IDs, broad_df$broad_quality, broad_df$broad_th, clnTh, SIMPLIFY = FALSE)) #tools concordance
+broad_conc <- rbindlist(mapply(broadConcordance, merged_GR_dfs, IDs, broad_df$broad_quality, broad_df$broad_th, SIMPLIFY = FALSE)) #tools concordance
 broad_stats <- rbindlist(lapply(IDs, function(x) broadStats(broad_conc, x))) #broad stats per sample
 
 write_tsv(broad_conc, paste0(outDir, "CNAs/refitted_calls/broad_DJ_concordance.txt")) #saving
@@ -246,8 +259,8 @@ write_tsv(broad_stats, paste0(outDir, "CNAs/refitted_calls/broad_stats.txt"))
 
 ## concordant broad CNA classification
 broad_calls <- broad_conc %>%
-  mutate(cwR_call = ifelse(cwR_CN >= 2 + clnTh, "amp", ifelse(cwR_CN <= 2 - clnTh, "del", NA)), 
-         CNV_call = ifelse(CNV_CN >= 2 + clnTh, "amp", ifelse(CNV_CN <= 2 - clnTh, "del", NA)), 
+  mutate(cwR_call = ifelse(cwR_CN >= 2 + th, "amp", ifelse(cwR_CN <= 2 - th, "del", NA)), #th can also be based on sample's quality
+         CNV_call = ifelse(CNV_CN >= 2 + th, "amp", ifelse(CNV_CN <= 2 - th, "del", NA)), 
          call = ifelse(cwR_call==CNV_call & CNV_call=="amp", "amp", ifelse(cwR_call==CNV_call & CNV_call=="del", "del", NA))) %>%
   filter(!is.na(call)) %>%
   select(ID, chrarm, cwR_CN, CNV_CN, cwR_call, CNV_call, call)
@@ -259,8 +272,7 @@ write_tsv(broad_calls, paste0(outDir, "CNAs/refitted_calls/broad_calls.txt")) #s
 message("Running tool: HsMetrics.\n")
 
 ## loading target genes normalization factors  
-#focal_NF <- fread(paste0(libDir, "inst/extdata/targets_Normalization_Factors.txt"))
-focal_NF <- fread(paste0(libDir, "inst/extdata/RTM-NovaSeq_targets_Normalization_Factors.txt"))
+focal_NF <- fread(PON)
 
 ## exons data
 exon_files <- searchFiles(wd, regex$exons)
@@ -308,7 +320,7 @@ write_tsv(genes_corrected_df, paste0(outDir, "CNAs/refitted_calls/genes_correcte
 
 ## focal CNA classification 
 focal_calls <- genes_corrected_df %>% 
-  mutate(alt = ifelse(Q1_CN_corrected >= 2 + clnTh, "amp", ifelse(Q3_CN_corrected <= 2 - clnTh, "del", NA))) %>%
+  mutate(alt = ifelse(Q1_CN_corrected >= 2 + th, "amp", ifelse(Q3_CN_corrected <= 2 - th, "del", NA))) %>% #th can be based on sample's quality
   select(-c(chr, start, end, width, purity), -starts_with(c("CI95", "focal"))) %>%
   filter(!is.na(alt))
 
@@ -331,7 +343,8 @@ delly_df <- createVcf(searchFiles(wd, regex$delly), filters$delly)
 ## filtering
 delly_IgH_tmp <- filterForChr14(delly_df)
 delly_IgH_df <- filterForTargets(delly_IgH_tmp, refGen, partners, IgHLocus, targetGene) %>%
-  mutate(call_ID = paste0("SR=", SR,"_", "PE=", PE,"_", "Q=", QUAL), 
+  mutate(DNA = str_remove(Indiv, "_S\\d+$"), 
+         call_ID = paste0("SR=", SR,"_", "PE=", PE,"_", "Q=", QUAL), 
          VAF_split = (gt_DV / (gt_DR + gt_DV)) %>% round(3), 
          VAF_junct = (gt_RV / (gt_RR + gt_RV)) %>% round(3)) %>%
   arrange(CHROM)
@@ -356,7 +369,8 @@ manta_df <- createVcf(searchFiles(wd, regex$manta), filters$manta) %>%
 manta_IgH_tmp <- filterForChr14(manta_df) %>% filter(TOT_DEPTH > 5)
 manta_IgH_df <- filterForTargets(manta_IgH_tmp, refGen, partners, IgHLocus, targetGene) %>%
   filter(CHROM==14) %>%
-  mutate(call_ID = paste0("DP=", BND_DEPTH, ";",MATE_BND_DEPTH))
+  mutate(DNA = str_remove(Indiv, "_S\\d+$"),
+         call_ID = paste0("DP=", BND_DEPTH, ";",MATE_BND_DEPTH))
 
 write_tsv(manta_IgH_df, paste0(outDir, "t_IgH/manta_IgH.txt")) #saving
 
@@ -367,11 +381,11 @@ write_tsv(manta_calls, paste0(outDir, "t_IgH/manta_calls.txt")) #saving
 
 ### CHECKING FOR TOOLS CONCORDANCE ###
 IgH_calls <- full_join(delly_calls, manta_calls, by = "ID", suffix = c("_delly", "_manta")) %>%
-  mutate(conc_4_14 = ifelse((t_IgH_4_14_delly + t_IgH_4_14_manta)>=1, 1, 0), 
-         conc_6_14 = ifelse((t_IgH_6_14_delly + t_IgH_6_14_manta)>=1, 1, 0), 
-         conc_11_14 = ifelse((t_IgH_11_14_delly + t_IgH_11_14_manta)>=1, 1, 0), 
-         conc_14_16 = ifelse((t_IgH_14_16_delly + t_IgH_14_16_manta)>=1, 1, 0), 
-         conc_14_20 = ifelse((t_IgH_14_20_delly + t_IgH_14_20_manta)>=1, 1, 0)) %>%
+  mutate(conc_4_14 = ifelse((t_IgH_4_14_delly + t_IgH_4_14_manta) >= 1, 1, 0), 
+         conc_6_14 = ifelse((t_IgH_6_14_delly + t_IgH_6_14_manta) >= 1, 1, 0), 
+         conc_11_14 = ifelse((t_IgH_11_14_delly + t_IgH_11_14_manta) >= 1, 1, 0), 
+         conc_14_16 = ifelse((t_IgH_14_16_delly + t_IgH_14_16_manta) >= 1, 1, 0), 
+         conc_14_20 = ifelse((t_IgH_14_20_delly + t_IgH_14_20_manta) >= 1, 1, 0)) %>%
   select(ID, t_IgH_delly, call_delly, type_delly, t_IgH_manta, call_manta, type_manta,
          t_IgH_4_14_delly, t_IgH_4_14_manta, conc_4_14, 
          t_IgH_6_14_delly, t_IgH_6_14_manta, conc_6_14, 
@@ -463,13 +477,17 @@ strelka_variants_df <- validateSNV(str_filtered_df, fb_df, var_df, "Strelka")
 mut_filtered_df <- mut_df[!(mut_df$variant_name %in% mut_str_tmp$variant_name),]
 mutect2_variants_df <- validateSNV(mut_filtered_df, fb_df, var_df, "Mutect2")
 
-mut_filtered_df <- mut_df[!(mut_df$variant_name %in% mut_str_tmp$variant_name),]
-mutect2_variants_df <- validateSNV(mut_filtered_df, fb_df, var_df, "Mutect2")
-
-variants_df <- rbind(mut_str_df, strelka_variants_df, mutect2_variants_df)
+## VAF correction
+variants_df <- rbind(mut_str_df, strelka_variants_df, mutect2_variants_df) %>%
+  left_join(quality_df %>% select(ID, purity), by = c("Indiv"="ID")) %>%
+  left_join(genes_raw_df %>% select(ID, gene, median_CN), by = c("Indiv"="ID", "Gene.refGene"="gene")) %>%
+  rowwise() %>%
+  mutate(CCF = CCF(VAF, purity, median_CN)) %>%
+  relocate(VAF, .after = callers)
 
 ## annotating
 annotated_variants <- VarianThinker(variants_df, refGen)
+
 write_tsv(annotated_variants, paste0(outDir, "mutations/annotated_variants.txt"))
 
 message("Mutations calling algorithm: done!\n\n")
@@ -490,25 +508,24 @@ amp1q_dt <- bcnCNA(broad_calls, IDs, arm = "1q", alt = "amp") %>%
 del17p_dt <- bcnCNA(broad_calls, IDs, arm = "17p", alt = "del") %>%
   rename_with(~"del17p", alt)
 
-
 ## t_IgH
 IgH_dt <- IgH_calls %>%
   mutate(alt_delly = detectIgH(IgH_calls, "t_IgH_delly"),
          alt_manta = detectIgH(IgH_calls, "t_IgH_manta"), 
-         t_IgH = ifelse(!is.na(alt_delly), paste0(alt_delly), ifelse(!is.na(alt_manta), paste0(alt_manta), NA))) %>%
+         t_IgH =  ifelse(alt_delly!="", ifelse(alt_manta!= "", paste(alt_delly, alt_manta, sep = "/"), alt_delly), ifelse(alt_manta!="", alt_manta, ""))) %>%
   select(ID, t_IgH)
 IgH_dt[IgH_dt==""] <- NA
 
 
 ## TP53
-tp53_dt <- annotated_variants %>% filter(Gene.refGene=="TP53" & InterVar_automated %in% c("Pathogenic", "Likely_pathogenic")) %>%
+tp53_dt <- annotated_variants %>% filter(Gene.refGene=="TP53") %>% #& InterVar_automated %in% c("Pathogenic", "Likely_pathogenic")) %>%
+  filter(!POS==7579472) %>%
   select(ID = Indiv, TP53 = POS) %>%
   complete(ID = IDs) 
 
 #binding
 bcn_dt <- Reduce(function(x, y) merge(x, y, all = TRUE), list(del1p_dt, amp1q_dt, del17p_dt, IgH_dt, tp53_dt))
-
-write_tsv(bcn_dt, paste0(outDir, "bcn_scriteria.txt"))
+write_tsv(bcn_dt, paste0(outDir, "bcn_criteria.txt"))
 
 message("Barcellona criteria: done!\n")
 
