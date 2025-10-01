@@ -2,7 +2,7 @@
 
 # file: utils.R
 # description: data manipulation functions
-# last update: 23-09-24
+# last update: 30-09-25
 
 
 createGR <- function(df, sample, tool_name){
@@ -23,8 +23,7 @@ createVcf <- function(files, filters = NULL){
   VCFs <- lapply(files, function(x) read.vcfR(x, verbose = F)) 
   tidyVCFs <- lapply(VCFs, function(x) vcfR2tidy(x, single_frame = T, dot_is_NA = T, verbose = F))
   VCF_dfs <- lapply(seq_along(tidyVCFs), function(x) tidyVCFs[[x]]$dat) %>%
-    Map(cbind, ., DNA
-        = str_extract(files, "[\\d]+_S[\\d]+") %>% str_remove("_S[\\d]+"))
+    Map(cbind, ., DNA = str_extract(files, "[\\d]+_S[\\d]+") %>% str_remove("_S[\\d]+"))
   
   # filtering
   if (is.null(filters)) {

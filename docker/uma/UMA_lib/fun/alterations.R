@@ -7,7 +7,7 @@
 
 bcnCNA <- function(broad_calls, IDs, arm = c("1p", "1q", "17p"), alt = c("amp", "del")) {
   alt_df <- broad_calls %>% filter(chrarm==arm & call==alt)
-  alt_dt <- rbindlist(sapply(IDs, function(x) alt_df %>% filter(ID==x) %>% mutate(alt = ((cwR_CN + CNV_CN) / 2) %>% round(3)), simplify = FALSE)) %>%
+  alt_dt <- rbindlist(sapply(IDs, function(x) alt_df %>% filter(ID==x) %>% mutate(alt = median(c(cwR_CN, CNV_CN)) %>% round(3)), simplify = FALSE)) %>%
     complete(ID = IDs) %>%
     select(ID, alt)
   
@@ -15,7 +15,7 @@ bcnCNA <- function(broad_calls, IDs, arm = c("1p", "1q", "17p"), alt = c("amp", 
 }
 
 
-broadConcordance <- function(GR_df, ID, broad_quality, broad_th, th){
+broadConcordance <- function(GR_df, ID, broad_quality, broad_th){
   dj <- disjoin(GR_df, with.revmap = T)
   
   # extracting DJ info
@@ -31,13 +31,13 @@ broadConcordance <- function(GR_df, ID, broad_quality, broad_th, th){
   conc_df <- as.data.frame(dj) %>%
     mutate(ID, 
            cwR_CN = tools_stats$cwR_CN, cwR_probes = tools_stats$cwR_probes, 
-           CNV_CN = tools_stats$CNV_CN, CNV_probes = tools_stats$CNV_probes, 
+           CNV_CN = tools_stats$CNV_CN, CNV_probes = tools_stats$CNV_probes,
            broad_quality, broad_th) %>%
     filter(width > 10) %>%
     mutate(CN_diff = abs(cwR_CN - CNV_CN), 
-           conc = case_when(cwR_CN > 2 + th & CNV_CN > 2 + th ~ "conc_AMP",
-                            cwR_CN < 2 - th & CNV_CN < 2 - th ~ "conc_DEL", 
-                            cwR_CN < 2 + th & cwR_CN > 2 - th & CNV_CN < 2 + th & CNV_CN > 2 - th ~ "conc_NORMAL",
+           conc = case_when(cwR_CN > 2.20 & CNV_CN > 2.20 ~ "conc_AMP", #+/- th
+                            cwR_CN < 1.80 & CNV_CN < 1.80 ~ "conc_DEL", 
+                            cwR_CN < 2.20 & cwR_CN > 1.80 & CNV_CN < 2.20 & CNV_CN > 1.80 ~ "conc_NORMAL",
                             is.na(CNV_CN) | is.na(cwR_CN) ~ NA, 
                             TRUE ~ "discordant")) %>%
     rename_with(~"chr", seqnames)
@@ -96,7 +96,7 @@ correctSegments <- function(df, type = c("broad", "focal"), quality){
   
   # sample purity correction
   df_purity <- merge(df_bob_segs, quality, by = "ID") %>%
-    mutate(CN_purity_corrected = ifelse(purity > purityTh, ((CN_corrected - 2)/ purity + 2), CN_corrected), .after = purity)
+    mutate(CN_purity_corrected = ifelse(purity >= purityTh, ((CN_corrected - 2)/purity + 2), CN_corrected), .after = purity)
   output[["purity"]] <- df_purity
   
   return(output)
