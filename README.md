@@ -38,5 +38,11 @@ on HPC-like systems, Singularity is preferred.
 singularity pull docker://username/tool:version
 ```
 
+due to Docker pulling limits, the following command is preferred:
+
+```bash
+SINGULARITY_DOCKER_USERNAME=<username> SINGULARITY_DOCKER_PASSWORD=<password> singularity docker://username/tool:version
+```
+
 ### reference
 [Docker Hub](https://hub.docker.com/)
